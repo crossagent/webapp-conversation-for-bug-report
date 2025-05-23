@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
 'use client'
 import type { FC } from 'react'
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react' // Added useCallback for potential future use, useEffect, useState were already there
 import { useTranslation } from 'react-i18next'
 import produce, { setAutoFreeze } from 'immer'
 import { useBoolean, useGetState } from 'ahooks'
@@ -10,8 +10,8 @@ import Toast from '@/app/components/base/toast'
 import Sidebar from '@/app/components/sidebar'
 import ConfigSence from '@/app/components/config-scence'
 import Header from '@/app/components/header'
-import { fetchAppParams, fetchChatList, fetchConversations, generationConversationName, sendChatMessage, updateFeedback } from '@/service'
-import type { ChatItem, ConversationItem, Feedbacktype, PromptConfig, VisionFile, VisionSettings } from '@/types/app'
+import { fetchAppParams, fetchChatList, fetchConversations, generationConversationName, sendChatMessage, updateFeedback, fetchConversationVariables } from '@/service' // Added fetchConversationVariables
+import type { ChatItem, ConversationItem, Feedbacktype, PromptConfig, VisionFile, VisionSettings } from '@/types/app' // Assuming ConversationVariableItem might be part of types/app or defined inline if simple
 import { Resolution, TransferMethod, WorkflowRunningStatus } from '@/types/app'
 import Chat from '@/app/components/chat'
 import { setLocaleOnClient } from '@/i18n/client'
@@ -19,6 +19,7 @@ import useBreakpoints, { MediaType } from '@/hooks/use-breakpoints'
 import Loading from '@/app/components/base/loading'
 import { replaceVarWithValues, userInputsFormToPromptVariables } from '@/utils/prompt'
 import AppUnavailable from '@/app/components/app-unavailable'
+import ConversationVariablesPanel from '@/app/components/conversation-variables-panel'; // Import the new panel
 import { API_KEY, APP_ID, APP_INFO, isShowPrompt, promptTemplate } from '@/config'
 import type { Annotation as AnnotationType } from '@/types/log'
 import { addFileInfos, sortAgentSorts } from '@/utils/tools'
@@ -32,6 +33,9 @@ const Main: FC<IMainProps> = () => {
   const media = useBreakpoints()
   const isMobile = media === MediaType.mobile
   const hasSetAppConfig = APP_ID && API_KEY
+
+  const [dynamicVariables, setDynamicVariables] = useState<any[]>([]) // TODO: Define a more specific type for conversation variables if possible
+  const [isLoadingVariables, setIsLoadingVariables] = useState<boolean>(false)
 
   /*
   * app info
@@ -155,6 +159,41 @@ const Main: FC<IMainProps> = () => {
       setChatList(generateNewChatListWithOpenStatement())
   }
   useEffect(handleConversationSwitch, [currConversationId, inited])
+
+  // Effect to fetch conversation variables
+  useEffect(() => {
+    const loadConversationVariables = async () => {
+      if (inited && currConversationId && currConversationId !== '-1') {
+        setIsLoadingVariables(true)
+        try {
+          // Determine user identifier for the API call.
+          // Placeholder 'default-user' is used if no specific user ID is found in APP_INFO.
+          // This should be replaced with actual user identification logic if available in the project.
+          const userIdentifier = (APP_INFO as any)?.user_id || 'default-user'
+          if (userIdentifier === 'default-user') {
+            console.warn("Using 'default-user' for fetching conversation variables. This needs to be updated with a real user identifier based on the project's user system.");
+          }
+
+          const response = await fetchConversationVariables(currConversationId, { user: userIdentifier });
+          // Assuming the API response structure has a 'data' field containing the variables array.
+          // Adjust `response.data` if the actual structure is different.
+          setDynamicVariables(response.data || [])
+        } catch (error) {
+          console.error('Error fetching conversation variables:', error)
+          setDynamicVariables([])
+          // Optionally, notify the user about the error using Toast or a similar mechanism
+          // Toast.notify({ type: 'error', message: t('app.chat.variableError') });
+        } finally {
+          setIsLoadingVariables(false)
+        }
+      } else {
+        // Clear variables if the conversation is new or not properly initialized
+        setDynamicVariables([])
+      }
+    }
+
+    loadConversationVariables()
+  }, [currConversationId, inited, APP_INFO]) // Added APP_INFO to dependencies as userIdentifier might rely on it
 
   const handleConversationIdChange = (id: string) => {
     if (id === '-1') {
@@ -541,7 +580,7 @@ const Main: FC<IMainProps> = () => {
         setChatList(newListWithAnswer)
       },
       onMessageReplace: (messageReplace) => {
-        setChatList(produce(
+        setChatList(produce( // Using produce from immer
           getChatList(),
           (draft) => {
             const current = draft.find(item => item.id === messageReplace.id)
@@ -662,10 +701,12 @@ const Main: FC<IMainProps> = () => {
             </div>
           </div>
         )}
-        {/* main */}
-        <div className='flex-grow flex flex-col h-[calc(100vh_-_3rem)] overflow-y-auto'>
-          <ConfigSence
-            conversationName={conversationName}
+        {/* main: This will now be a flex row container for Chat Area and Variables Panel */}
+        <div className='flex flex-row flex-grow h-[calc(100vh_-_3rem)] overflow-hidden'> {/* Changed to flex-row, overflow-hidden here, child will scroll */}
+          {/* Primary Chat and Config Area (Center Column) */}
+          <div className='flex-grow flex flex-col overflow-y-auto'> {/* This column will scroll */}
+            <ConfigSence
+              conversationName={conversationName}
             hasSetInputs={hasSetInputs}
             isPublicVersion={isShowPrompt}
             siteInfo={APP_INFO}
@@ -676,21 +717,34 @@ const Main: FC<IMainProps> = () => {
             onInputsChange={setCurrInputs}
           ></ConfigSence>
 
-          {
-            hasSetInputs && (
-              <div className='relative grow h-[200px] pc:w-[794px] max-w-full mobile:w-full pb-[66px] mx-auto mb-3.5 overflow-hidden'>
-                <div className='h-full overflow-y-auto' ref={chatListDomRef}>
-                  <Chat
-                    chatList={chatList}
+            {
+              hasSetInputs && (
+                // Adjusted width, removed mx-auto to allow panel to sit alongside
+                <div className='relative grow h-[200px] max-w-full mobile:w-full pb-[66px] mb-3.5 flex-grow'> {/* Removed pc:w-[794px] and mx-auto. Added flex-grow */}
+                  <div className='h-full overflow-y-auto' ref={chatListDomRef}>
+                    <Chat
+                      chatList={chatList}
                     onSend={handleSend}
                     onFeedback={handleFeedback}
                     isResponding={isResponding}
                     checkCanSend={checkCanSend}
                     visionConfig={visionConfig}
-                  />
-                </div>
-              </div>)
-          }
+                    />
+                  </div>
+                </div>)
+            }
+          </div>
+
+          {/* Conversation Variables Panel (Right Column) */}
+          {inited && currConversationId && currConversationId !== '-1' && !isMobile && ( // Added !isMobile, pc:flex is on panel itself or its direct wrapper if needed
+            <div className="w-[300px] hidden pc:flex flex-col border-l border-gray-200 h-full"> {/* Applied styles from example */}
+              {/* The ConversationVariablesPanel itself handles internal scrolling and padding */}
+              <ConversationVariablesPanel
+                variables={dynamicVariables}
+                isLoading={isLoadingVariables}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

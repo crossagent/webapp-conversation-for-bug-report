@@ -60,3 +60,16 @@ export const updateFeedback = async ({ url, body }: { url: string; body: Feedbac
 export const generationConversationName = async (id: string) => {
   return post(`conversations/${id}/name`, { body: { auto_generate: true } })
 }
+
+export const fetchConversationVariables = async (
+  conversationId: string,
+  params: {
+    user: string; // User identifier is typically required
+    limit?: number;
+    last_id?: string;
+  },
+) => {
+  // The `get` function in `service/base.ts` handles params object directly.
+  // It will construct the query string, omitting undefined values.
+  return get(`/api/conversations/${conversationId}/variables`, { params });
+};
